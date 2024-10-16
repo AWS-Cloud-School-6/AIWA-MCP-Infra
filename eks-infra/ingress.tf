@@ -1,59 +1,100 @@
-# https://medium.com/@StephenKanyiW/provision-eks-with-terraform-helm-and-a-load-balancer-controller-821dacb35066
-
-# 현재 계정 ID를 가져오기 위한 데이터 소스 선언
-data "aws_caller_identity" "current2" {}
+# ingress.tf 파일 최상단에 추가
+data "aws_caller_identity" "current" {}
 
 # Fetch EKS Cluster Details
-data "aws_eks_cluster" "cluster" {
-  name       = module.eks.cluster_name
-  depends_on = [module.eks] # 클러스터가 생성된 후에만 실행
+data "aws_eks_cluster" "cluster_1" {
+  name       = module.eks_1.cluster_name
+  depends_on = [module.eks_1]
+}
 
+data "aws_eks_cluster" "cluster_2" {
+  name       = module.eks_2.cluster_name
+  depends_on = [module.eks_2]
 }
 
 locals {
-  oidc_issuer_url   = replace(data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer, "https://", "")
-  oidc_provider_arn = "arn:aws:iam::${data.aws_caller_identity.current2.account_id}:oidc-provider/${local.oidc_issuer_url}"
+  oidc_issuer_url_1   = replace(data.aws_eks_cluster.cluster_1.identity[0].oidc[0].issuer, "https://", "")
+  oidc_provider_arn_1 = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.oidc_issuer_url_1}"
+
+  oidc_issuer_url_2   = replace(data.aws_eks_cluster.cluster_2.identity[0].oidc[0].issuer, "https://", "")
+  oidc_provider_arn_2 = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.oidc_issuer_url_2}"
 }
 
-module "lb_role" {
+# Load Balancer Controller Role for Cluster 1
+module "lb_role_1" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name                              = "${module.eks.cluster_name}_eks_lb"
+  role_name                              = "${module.eks_1.cluster_name}_eks_lb"
   attach_load_balancer_controller_policy = true
 
   oidc_providers = {
     main = {
-      provider_arn               = local.oidc_provider_arn
-      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+      provider_arn               = local.oidc_provider_arn_1
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller-1"]
     }
   }
 }
 
+# Load Balancer Controller Role for Cluster 2
+module "lb_role_2" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-resource "kubernetes_service_account" "service-account" {
+  role_name                              = "${module.eks_2.cluster_name}_eks_lb"
+  attach_load_balancer_controller_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = local.oidc_provider_arn_2
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller-2"]
+    }
+  }
+}
+
+# Service Account for Cluster 1
+resource "kubernetes_service_account" "service-account-1" {
   metadata {
-    name      = "aws-load-balancer-controller"
+    name      = "aws-load-balancer-controller-1"
     namespace = "kube-system"
     labels = {
-      "app.kubernetes.io/name"       = "aws-load-balancer-controller"
-      "app.kubernetes.io/component"  = "controller"
-      "app.kubernetes.io/managed-by" = "terraform"
+      "app.kubernetes.io/name"      = "aws-load-balancer-controller"
+      "app.kubernetes.io/component" = "controller"
     }
     annotations = {
-      "eks.amazonaws.com/role-arn"               = module.lb_role.iam_role_arn
+      "eks.amazonaws.com/role-arn"               = module.lb_role_1.iam_role_arn
       "eks.amazonaws.com/sts-regional-endpoints" = "true"
     }
   }
+  provider = kubernetes.cluster1
 }
 
-resource "helm_release" "alb-controller" {
-  name       = "aws-load-balancer-controller"
+# Service Account for Cluster 2
+resource "kubernetes_service_account" "service-account-2" {
+  metadata {
+    name      = "aws-load-balancer-controller-2"
+    namespace = "kube-system"
+    labels = {
+      "app.kubernetes.io/name"      = "aws-load-balancer-controller"
+      "app.kubernetes.io/component" = "controller"
+    }
+    annotations = {
+      "eks.amazonaws.com/role-arn"               = module.lb_role_2.iam_role_arn
+      "eks.amazonaws.com/sts-regional-endpoints" = "true"
+    }
+  }
+  provider = kubernetes.cluster2
+}
+
+# ALB Controller for Cluster 1
+resource "helm_release" "alb-controller-1" {
+  name       = "aws-load-balancer-controller-1"
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
   namespace  = "kube-system"
+  provider   = helm.cluster1
+
   depends_on = [
-    kubernetes_service_account.service-account,
-    module.eks
+    kubernetes_service_account.service-account-1,
+    module.eks_1
   ]
 
   set {
@@ -67,8 +108,42 @@ resource "helm_release" "alb-controller" {
   }
 
   set {
-    name  = "image.repository"
-    value = "602401143452.dkr.ecr.${var.region}.amazonaws.com/amazon/aws-load-balancer-controller"
+    name  = "serviceAccount.create"
+    value = "false"
+  }
+
+  set {
+    name  = "serviceAccount.name"
+    value = "aws-load-balancer-controller-1"
+  }
+
+  set {
+    name  = "clusterName"
+    value = module.eks_1.cluster_name
+  }
+}
+
+# ALB Controller for Cluster 2
+resource "helm_release" "alb-controller-2" {
+  name       = "aws-load-balancer-controller-2"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  namespace  = "kube-system"
+  provider   = helm.cluster2
+
+  depends_on = [
+    kubernetes_service_account.service-account-2,
+    module.eks_2
+  ]
+
+  set {
+    name  = "region"
+    value = var.region
+  }
+
+  set {
+    name  = "vpcId"
+    value = module.vpc.vpc_id
   }
 
   set {
@@ -78,11 +153,11 @@ resource "helm_release" "alb-controller" {
 
   set {
     name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
+    value = "aws-load-balancer-controller-2"
   }
 
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name
+    value = module.eks_2.cluster_name
   }
 }

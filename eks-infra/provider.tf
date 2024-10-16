@@ -4,22 +4,93 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.0"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.0"
+    }
   }
 }
 
-# Configure the AWS Provider
 provider "aws" {
-  region = "ap-northeast-2"
+  region = var.region
 }
 
+# Kubernetes provider for cluster 1
 provider "kubernetes" {
-  # Remove exec block as it's redundant with local kubeconfig
-  config_path = "~/.kube/config" # 사용자의 kubeconfig를 사용하여 접근
+  alias                  = "cluster1"
+  host                   = module.eks_1.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_1.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args = [
+      "eks",
+      "get-token",
+      "--cluster-name",
+      module.eks_1.cluster_name
+    ]
+  }
 }
 
+# Kubernetes provider for cluster 2
+provider "kubernetes" {
+  alias                  = "cluster2"
+  host                   = module.eks_2.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_2.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args = [
+      "eks",
+      "get-token",
+      "--cluster-name",
+      module.eks_2.cluster_name
+    ]
+  }
+}
+
+# Helm provider for cluster 1
 provider "helm" {
+  alias = "cluster1"
   kubernetes {
-    host        = data.aws_eks_cluster.cluster.endpoint
-    config_path = "~/.kube/config" # 동일하게 kubeconfig 사용
+    host                   = module.eks_1.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_1.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args = [
+        "eks",
+        "get-token",
+        "--cluster-name",
+        module.eks_1.cluster_name
+      ]
+    }
+  }
+}
+
+# Helm provider for cluster 2
+provider "helm" {
+  alias = "cluster2"
+  kubernetes {
+    host                   = module.eks_2.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_2.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args = [
+        "eks",
+        "get-token",
+        "--cluster-name",
+        module.eks_2.cluster_name
+      ]
+    }
   }
 }
