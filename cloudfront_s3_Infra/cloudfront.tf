@@ -1,21 +1,17 @@
-# OAC 생성
-resource "aws_cloudfront_origin_access_control" "oac" {
-  name                              = "example-oac"
-  description                       = "OAC for CloudFront to access S3 bucket"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always" # 항상 서명된 요청 사용
-  signing_protocol                  = "sigv4"  # SigV4 프로토콜 사용
-}
-
-# CloudFront 배포에 OAC 연동
+# CloudFront 배포 설정
 resource "aws_cloudfront_distribution" "s3_distribution" {
-  depends_on = [aws_cloudfront_origin_access_control.oac] # OAC 생성 후 배포
-
   origin {
-    domain_name = aws_s3_bucket.test.bucket_regional_domain_name
+    # S3 웹사이트 엔드포인트를 도메인으로 사용
+    domain_name = aws_s3_bucket_website_configuration.test.website_endpoint
     origin_id   = aws_s3_bucket.test.id
 
-    origin_access_control_id = aws_cloudfront_origin_access_control.oac.id # OAC 연결
+    # 웹사이트 엔드포인트를 사용할 때는 custom_origin_config 필요
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only" # S3 웹사이트 엔드포인트는 HTTP만 지원
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
   }
 
   enabled             = true
@@ -23,7 +19,7 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
 
   default_cache_behavior {
     target_origin_id       = aws_s3_bucket.test.id
-    viewer_protocol_policy = "allow-all"
+    viewer_protocol_policy = "redirect-to-https" # HTTPS 리다이렉트 추가
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
 
